@@ -11,10 +11,17 @@ interface ChatPanelProps {
 export const ChatPanel: React.FC<ChatPanelProps> = ({ messages, currentSessionId, onSendMessage }) => {
   const [inputText, setInputText] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   // Auto scroll to bottom when new messages arrive
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const container = scrollContainerRef.current;
+    if (container) {
+      const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight <= 100;
+      if (isNearBottom || messages.length <= 1) {
+        container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' });
+      }
+    }
   }, [messages]);
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -42,7 +49,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ messages, currentSessionId
       </div>
 
       {/* Messages List */}
-      <div className="flex-1 p-4 overflow-y-auto space-y-4">
+      <div ref={scrollContainerRef} className="flex-1 p-4 overflow-y-auto space-y-4">
         {messages.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-center p-4">
             <MessageSquare className="w-10 h-10 text-slate-700 mb-2" />

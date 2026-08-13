@@ -14,18 +14,22 @@ import {
   ShieldAlert, 
   RefreshCw,
   LogOut,
-  AlertCircle
+  AlertCircle,
+  Info
 } from 'lucide-react';
 
 import { useWebRTC } from '../../../hooks/useWebRTC';
+import { useToast } from '../../../components/common/Toast';
 import { VideoTile } from '../../../components/meeting/VideoTile';
 import { ChatPanel } from '../../../components/meeting/ChatPanel';
 import { Participant } from '../../../types/meeting';
+import { api } from '../../../lib/api';
 
 export default function MeetingPage() {
   const params = useParams();
   const searchParams = useSearchParams();
   const router = useRouter();
+  const { showToast } = useToast();
   const meetingId = params?.meeting_id as string;
 
   // Lobby state
@@ -43,6 +47,7 @@ export default function MeetingPage() {
   // UI state
   const [showChat, setShowChat] = useState(true);
   const [showParticipantsList, setShowParticipantsList] = useState(false);
+  const [showInfoPopover, setShowInfoPopover] = useState(false);
 
   // Auto check for host parameters from URL (e.g. ?demo_user=alex)
   useEffect(() => {
@@ -67,6 +72,7 @@ export default function MeetingPage() {
     screenSharing,
     permissionError,
     meetingDetails,
+    meetingEnded,
     initLocalMedia,
     toggleMicrophone,
     toggleCamera,
@@ -94,29 +100,8 @@ export default function MeetingPage() {
     const newSessionId = 'sess_' + Math.random().toString(36).substring(2) + Date.now().toString(36);
     
     try {
-      const headers: HeadersInit = { 'Content-Type': 'application/json' };
-      // Check if host authentication is requested
-      if (isHostCheck) {
-        headers['X-Demo-User'] = 'alex';
-      }
-
-      // REST: Join API
-      const response = await fetch(`http://localhost:8000/api/meetings/${meetingId}/join/`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          display_name: displayName.trim(),
-          session_id: newSessionId
-        })
-      });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        setErrorText(data.error?.message || 'Failed to join the meeting. Please verify that the meeting ID is valid.');
-        setLoading(false);
-        return;
-      }
+      // REST: Join API using centralized client
+      const data = await api.joinMeeting(meetingId, displayName.trim(), newSessionId, isHostCheck);
 
       // Initialize media capturing before establishing socket connection
       await initLocalMedia();
@@ -125,9 +110,10 @@ export default function MeetingPage() {
       setParticipantId(data.participant_id);
       setIsHost(data.is_host);
       setJoined(true);
-    } catch (err) {
+    } catch (err: unknown) {
       console.error(err);
-      setErrorText('Server connection failed. Make sure the backend Django server is running on http://localhost:8000.');
+      const msg = err instanceof Error ? err.message : 'Server connection failed. Make sure the backend Django server is running.';
+      setErrorText(msg);
       setLoading(false);
     }
   };
@@ -154,6 +140,41 @@ export default function MeetingPage() {
         return <span className="bg-slate-500/10 text-slate-400 border border-slate-500/20 px-2 py-1 rounded text-xs font-semibold uppercase flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-slate-400"></span>Disconnected</span>;
     }
   };
+
+  // If meeting ended, render Ended screen
+  if (meetingEnded) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-6 text-slate-100 font-sans">
+        <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl p-8 shadow-2xl space-y-6 text-center animate-fade-in">
+          <div className="mx-auto w-16 h-16 rounded-full bg-rose-500/10 border border-rose-500/30 flex items-center justify-center text-rose-500">
+            <PhoneOff className="w-8 h-8" />
+          </div>
+          
+          <div className="space-y-2">
+            <h1 className="text-2xl font-extrabold tracking-tight text-white">This meeting has ended</h1>
+            <p className="text-slate-450 text-sm">
+              Your meeting was ended by the host or all participants have left.
+            </p>
+          </div>
+
+          <div className="pt-4 border-t border-slate-800 flex flex-col gap-3">
+            <button
+              onClick={() => router.push(`/meetings`)}
+              className="w-full bg-slate-800 hover:bg-slate-750 text-white font-bold py-3 rounded-xl transition-all text-sm uppercase tracking-wider"
+            >
+              View Meeting Details
+            </button>
+            <button
+              onClick={() => router.push(`/`)}
+              className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded-xl transition-all text-sm shadow-md uppercase tracking-wider"
+            >
+              Return to Dashboard
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // If not joined, render Pre-Join lobby screen
   if (!joined) {
@@ -234,16 +255,34 @@ export default function MeetingPage() {
     is_local: true
   };
 
+  const getGridClasses = (count: number) => {
+    if (count === 1) return "max-w-4xl mx-auto w-full aspect-video";
+    if (count === 2) return "grid grid-cols-1 md:grid-cols-2 gap-6 max-w-5xl mx-auto w-full";
+    if (count === 3) return "grid grid-cols-1 md:grid-cols-3 gap-6 max-w-6xl mx-auto w-full";
+    if (count === 4) return "grid grid-cols-1 md:grid-cols-2 gap-6 max-w-4xl mx-auto w-full";
+    return "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 max-w-6xl mx-auto w-full";
+  };
+
   const totalTiles = [localParticipant, ...remoteParticipants];
 
   return (
     <div className="h-screen bg-slate-950 flex flex-col text-slate-100 overflow-hidden font-sans">
       
       {/* 1. Header Bar */}
-      <header className="h-16 px-6 bg-slate-900 border-b border-slate-850 flex items-center justify-between shrink-0">
+      <header className="h-16 px-6 bg-slate-900 border-b border-slate-850 flex items-center justify-between shrink-0 relative">
         <div className="flex flex-col">
-          <h1 className="text-white font-bold text-base leading-tight">
-            {meetingDetails?.title || 'Video Conference'}
+          <h1 className="text-white font-bold text-base leading-tight flex items-center gap-2">
+            <span>{meetingDetails?.title || 'Video Conference'}</span>
+            <button
+              type="button"
+              onClick={() => setShowInfoPopover(!showInfoPopover)}
+              className={`p-1 rounded-md transition-colors flex items-center justify-center ${
+                showInfoPopover ? 'bg-slate-800 text-indigo-400' : 'text-slate-400 hover:text-white hover:bg-slate-800'
+              }`}
+              title="Meeting Information"
+            >
+              <Info className="w-4 h-4" />
+            </button>
           </h1>
           <span className="text-slate-500 text-xs font-medium">ID: {meetingId}</span>
         </div>
@@ -258,34 +297,84 @@ export default function MeetingPage() {
         </div>
       </header>
 
+      {/* Info Popover Overlay */}
+      {showInfoPopover && meetingDetails && (
+        <div className="absolute top-16 left-6 w-80 bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl p-5 z-50 text-xs space-y-4 animate-fade-in">
+          <div className="border-b border-slate-800 pb-2.5">
+            <h3 className="text-sm font-extrabold text-white">{meetingDetails.title}</h3>
+            {meetingDetails.description && (
+              <p className="text-slate-400 mt-1 leading-relaxed">{meetingDetails.description}</p>
+            )}
+          </div>
+          
+          <div className="space-y-3 text-slate-350">
+            <div className="grid grid-cols-3">
+              <span className="text-slate-500 font-semibold">Meeting ID</span>
+              <span className="col-span-2 text-slate-200 select-all font-mono">{meetingDetails.meeting_id}</span>
+            </div>
+            <div className="grid grid-cols-3">
+              <span className="text-slate-500 font-semibold">Host</span>
+              <span className="col-span-2 text-slate-200">{meetingDetails.host ? meetingDetails.host.name : 'Alex Johnson'}</span>
+            </div>
+            <div className="grid grid-cols-3">
+              <span className="text-slate-500 font-semibold">Invite Link</span>
+              <span className="col-span-2 text-slate-200 select-all font-mono truncate" title={meetingDetails.invite_link}>
+                {meetingDetails.invite_link}
+              </span>
+            </div>
+            {meetingDetails.duration_minutes && (
+              <div className="grid grid-cols-3">
+                <span className="text-slate-500 font-semibold">Duration</span>
+                <span className="col-span-2 text-slate-200">{meetingDetails.duration_minutes} minutes</span>
+              </div>
+            )}
+          </div>
+          
+          <div className="pt-2 border-t border-slate-800 flex gap-2">
+            <button
+              onClick={() => {
+                navigator.clipboard.writeText(meetingDetails.meeting_id);
+                showToast('Copied Meeting ID', 'success');
+              }}
+              className="flex-1 bg-slate-800 hover:bg-slate-750 text-white font-bold py-1.5 px-3 rounded-lg transition-colors text-center"
+            >
+              Copy ID
+            </button>
+            <button
+              onClick={() => {
+                navigator.clipboard.writeText(meetingDetails.invite_link);
+                showToast('Copied Invite Link', 'success');
+              }}
+              className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-1.5 px-3 rounded-lg transition-colors text-center"
+            >
+              Copy Link
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* 2. Main Area (Grid + panels) */}
       <div className="flex-1 flex overflow-hidden">
         
         {/* Video Grid container */}
-        <div className="flex-1 p-6 flex flex-col justify-center overflow-y-auto">
-          {totalTiles.length === 1 ? (
-            <div className="max-w-2xl mx-auto w-full aspect-video">
-              <VideoTile participant={localParticipant} isLocal={true} />
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 items-center justify-center max-w-6xl mx-auto w-full">
-              {totalTiles.map((p) => (
-                <div key={p.session_id} className="relative aspect-video">
-                  <VideoTile participant={p} isLocal={p.is_local} />
-                  
-                  {/* Host specific kick controls on remote tiles */}
-                  {isHost && !p.is_local && (
-                    <button
-                      onClick={() => hostKickParticipant(p.id, p.session_id)}
-                      className="absolute top-3 left-3 bg-rose-500 hover:bg-rose-600 text-white px-2 py-1 rounded text-xs font-semibold z-20 border border-rose-600 transition-colors shadow-sm"
-                    >
-                      Remove
-                    </button>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
+        <div className="flex-1 p-6 flex flex-col justify-center items-center overflow-y-auto">
+          <div className={getGridClasses(totalTiles.length)}>
+            {totalTiles.map((p) => (
+              <div key={p.session_id} className="relative aspect-video w-full h-full animate-fade-in">
+                <VideoTile participant={p} isLocal={p.is_local} />
+                
+                {/* Host specific kick controls on remote tiles */}
+                {isHost && !p.is_local && (
+                  <button
+                    onClick={() => hostKickParticipant(p.id, p.session_id)}
+                    className="absolute top-3 left-3 bg-rose-600 hover:bg-rose-700 text-white px-2.5 py-1.5 rounded-lg text-xs font-bold z-20 border border-rose-700 transition-colors shadow-md uppercase tracking-wider"
+                  >
+                    Remove
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
         </div>
 
         {/* Dynamic side panels */}

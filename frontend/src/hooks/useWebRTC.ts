@@ -53,6 +53,7 @@ export function useWebRTC(
   const [remoteParticipants, setRemoteParticipants] = useState<Participant[]>([]);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [meetingDetails, setMeetingDetails] = useState<Meeting | null>(null);
+  const [meetingEnded, setMeetingEnded] = useState(false);
   
   const peerConnections = useRef<Map<string, RTCPeerConnection>>(new Map());
   const iceQueueMap = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
@@ -335,6 +336,12 @@ export function useWebRTC(
       }
     });
 
+    const unsubscribeMeetingEnded = socketInst.subscribe<void>('meeting_ended', () => {
+      console.log('Meeting has been ended by the host.');
+      setMeetingEnded(true);
+      cleanupMedia();
+    });
+
     return () => {
       unsubscribeState();
       unsubscribeJoined();
@@ -348,8 +355,9 @@ export function useWebRTC(
       unsubscribeScreenStop();
       unsubscribeChat();
       unsubscribeMuteAll();
+      unsubscribeMeetingEnded();
     };
-  }, [initiatePeerConnection, closePeerConnection, toggleLocalMic]);
+  }, [initiatePeerConnection, closePeerConnection, toggleLocalMic, cleanupMedia]);
 
   // Handle socket subscription registration
   useEffect(() => {
@@ -463,6 +471,7 @@ export function useWebRTC(
     screenSharing,
     permissionError,
     meetingDetails,
+    meetingEnded,
     initLocalMedia,
     toggleMicrophone,
     toggleCamera,

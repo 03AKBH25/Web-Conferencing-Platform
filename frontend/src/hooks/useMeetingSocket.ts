@@ -18,8 +18,12 @@ export function useMeetingSocket(
     }
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    // Point to port 8000 where our Django ASGI Daphne server runs
-    const wsUrl = `${protocol}//localhost:8000/ws/meetings/${meetingId}/?session_id=${sessionId}&participant_id=${participantId}`;
+    // Load WS base URL from env (e.g. ws://localhost:8000/ws or wss://yourdomain.com/ws)
+    const envWsUrl = process.env.NEXT_PUBLIC_WS_URL || `${protocol}//localhost:8000/ws`;
+    // Ensure the scheme matches the page security (ws: -> wss: if on https)
+    const secureWsUrl = envWsUrl.replace(/^(ws|wss):/, protocol);
+    
+    const wsUrl = `${secureWsUrl}/meetings/${meetingId}/?session_id=${sessionId}&participant_id=${participantId}`;
     
     console.log(`Connecting to WebSocket: ${wsUrl}`);
     const socket = new MeetingSocket(wsUrl, (state) => {

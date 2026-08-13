@@ -21,6 +21,12 @@ export interface Meeting {
   invite_link: string;
   scheduled_at?: string;
   duration_minutes?: number;
+  host?: {
+    id: number;
+    username: string;
+    email: string;
+    name: string;
+  };
 }
 
 export interface ChatMessage {
