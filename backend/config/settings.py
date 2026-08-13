@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 import environ
+from corsheaders.defaults import default_headers
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -116,11 +117,20 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 # CORS configurations
 FRONTEND_URL = env('FRONTEND_URL', default='http://localhost:3000')
-CORS_ALLOWED_ORIGINS = [
+extra_frontend_urls = env.list('CORS_ALLOWED_ORIGINS', default=[])
+CORS_ALLOWED_ORIGINS = list(dict.fromkeys([
     FRONTEND_URL,
-]
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:3001",
+    "http://127.0.0.1:3001",
+    *extra_frontend_urls,
+]))
 # Support credentials (cookies, auth headers) for phase 2/3 if needed
 CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_HEADERS = list(default_headers) + [
+    'x-demo-user',
+]
 
 # Django REST Framework Settings
 REST_FRAMEWORK = {
@@ -142,4 +152,3 @@ CHANNEL_LAYERS = {
 }
 
 WEBSOCKET_GRACE_PERIOD = 5
-

@@ -31,11 +31,12 @@ export default function MeetingPage() {
   const router = useRouter();
   const { showToast } = useToast();
   const meetingId = params?.meeting_id as string;
+  const isDemoHost = searchParams?.get('demo_user') === 'alex';
 
   // Lobby state
   const [joined, setJoined] = useState(false);
-  const [displayName, setDisplayName] = useState('');
-  const [isHostCheck, setIsHostCheck] = useState(false);
+  const [displayName, setDisplayName] = useState(isDemoHost ? 'Alex Johnson' : '');
+  const [isHostCheck, setIsHostCheck] = useState(isDemoHost);
   const [errorText, setErrorText] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -51,15 +52,11 @@ export default function MeetingPage() {
 
   // Auto check for host parameters from URL (e.g. ?demo_user=alex)
   useEffect(() => {
-    const demoUser = searchParams?.get('demo_user');
-    if (demoUser === 'alex') {
-      const timer = setTimeout(() => {
-        setIsHostCheck(true);
-        setDisplayName('Alex Johnson');
-      }, 0);
-      return () => clearTimeout(timer);
+    if (isDemoHost) {
+      setIsHostCheck(true);
+      setDisplayName('Alex Johnson');
     }
-  }, [searchParams]);
+  }, [isDemoHost]);
 
   // Hook orchestration
   const {
