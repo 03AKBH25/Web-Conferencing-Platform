@@ -48,8 +48,11 @@ export default function MeetingPage() {
   useEffect(() => {
     const demoUser = searchParams?.get('demo_user');
     if (demoUser === 'alex') {
-      setIsHostCheck(true);
-      setDisplayName('Alex Johnson');
+      const timer = setTimeout(() => {
+        setIsHostCheck(true);
+        setDisplayName('Alex Johnson');
+      }, 0);
+      return () => clearTimeout(timer);
     }
   }, [searchParams]);
 
@@ -77,8 +80,7 @@ export default function MeetingPage() {
   } = useWebRTC(
     joined ? meetingId : null,
     joined ? sessionId : null,
-    joined ? participantId : null,
-    joined ? displayName : null
+    joined ? participantId : null
   );
 
   const handleJoin = async (e: React.FormEvent) => {
@@ -117,7 +119,7 @@ export default function MeetingPage() {
       }
 
       // Initialize media capturing before establishing socket connection
-      const stream = await initLocalMedia();
+      await initLocalMedia();
       
       setSessionId(newSessionId);
       setParticipantId(data.participant_id);

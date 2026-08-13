@@ -15,7 +15,7 @@ export const VideoTile: React.FC<VideoTileProps> = ({ participant, isLocal = fal
       console.log(`Setting stream for tile: ${participant.display_name} (Local: ${isLocal})`);
       videoRef.current.srcObject = participant.stream;
     }
-  }, [participant.stream, isLocal]);
+  }, [participant.stream, participant.display_name, isLocal]);
 
   // Extract initials for placeholder avatar
   const getInitials = (name: string) => {

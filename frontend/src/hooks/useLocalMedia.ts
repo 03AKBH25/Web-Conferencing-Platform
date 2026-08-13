@@ -27,7 +27,7 @@ export function useLocalMedia() {
         setMicrophoneEnabled(aTrack.enabled);
       }
       return stream;
-    } catch (err: any) {
+    } catch (err) {
       console.warn('Initial getUserMedia failed, attempting fallback...', err);
       // Try audio-only fallback
       try {
@@ -41,7 +41,7 @@ export function useLocalMedia() {
           setMicrophoneEnabled(aTrack.enabled);
         }
         return stream;
-      } catch (err2) {
+      } catch {
         // Try video-only fallback
         try {
           const stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: true });
@@ -86,6 +86,19 @@ export function useLocalMedia() {
     }
   }, [localStream]);
 
+  const stopScreenShare = useCallback((onTrackReplace: (track: MediaStreamTrack) => void) => {
+    if (screenTrackRef.current) {
+      screenTrackRef.current.stop();
+      screenTrackRef.current = null;
+    }
+    setScreenSharing(false);
+    
+    // Restore camera track
+    if (cameraTrackRef.current) {
+      onTrackReplace(cameraTrackRef.current);
+    }
+  }, []);
+
   const startScreenShare = useCallback(async (onTrackReplace: (track: MediaStreamTrack) => void) => {
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
@@ -106,20 +119,7 @@ export function useLocalMedia() {
       console.error('Failed to share screen:', err);
       return null;
     }
-  }, []);
-
-  const stopScreenShare = useCallback((onTrackReplace: (track: MediaStreamTrack) => void) => {
-    if (screenTrackRef.current) {
-      screenTrackRef.current.stop();
-      screenTrackRef.current = null;
-    }
-    setScreenSharing(false);
-    
-    // Restore camera track
-    if (cameraTrackRef.current) {
-      onTrackReplace(cameraTrackRef.current);
-    }
-  }, []);
+  }, [stopScreenShare]);
 
   const cleanupMedia = useCallback(() => {
     if (localStream) {

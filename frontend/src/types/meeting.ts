@@ -44,5 +44,5 @@ export interface MeetingStatePayload {
 
 export interface SocketMessage {
   type: string;
-  payload: any;
+  payload: unknown;
 }

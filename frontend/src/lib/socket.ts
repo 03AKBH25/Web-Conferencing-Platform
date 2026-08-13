@@ -3,11 +3,11 @@ import { SocketMessage, ConnectionState } from '../types/meeting';
 export class MeetingSocket {
   private ws: WebSocket | null = null;
   private url: string;
-  private onMessageCallbacks: Map<string, Set<(payload: any) => void>> = new Map();
+  private onMessageCallbacks: Map<string, Set<(payload: unknown) => void>> = new Map();
   private onStateChange: (state: ConnectionState) => void;
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
-  private reconnectTimeout: any = null;
+  private reconnectTimeout: NodeJS.Timeout | null = null;
   private isExplicitlyClosed = false;
 
   constructor(
@@ -18,7 +18,7 @@ export class MeetingSocket {
     this.onStateChange = onStateChange;
   }
 
-  connect() {
+  connect(): void {
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
       return;
     }
@@ -35,9 +35,9 @@ export class MeetingSocket {
         console.log('WebSocket connection opened');
       };
       
-      this.ws.onmessage = (event) => {
+      this.ws.onmessage = (event: MessageEvent) => {
         try {
-          const message: SocketMessage = JSON.parse(event.data);
+          const message = JSON.parse(event.data) as SocketMessage;
           this.trigger(message.type, message.payload);
         } catch (e) {
           console.error('Error parsing WebSocket message:', e);
@@ -61,7 +61,7 @@ export class MeetingSocket {
     }
   }
 
-  private attemptReconnect() {
+  private attemptReconnect(): void {
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
       console.log('Max reconnect attempts reached');
       return;
@@ -76,9 +76,12 @@ export class MeetingSocket {
     }, 3000);
   }
 
-  disconnect() {
+  disconnect(): void {
     this.isExplicitlyClosed = true;
-    if (this.reconnectTimeout) clearTimeout(this.reconnectTimeout);
+    if (this.reconnectTimeout) {
+      clearTimeout(this.reconnectTimeout);
+      this.reconnectTimeout = null;
+    }
     if (this.ws) {
       this.ws.close();
       this.ws = null;
@@ -86,7 +89,7 @@ export class MeetingSocket {
     this.onStateChange('disconnected');
   }
 
-  send(type: string, payload: any) {
+  send(type: string, payload: unknown): void {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({ type, payload }));
     } else {
@@ -94,25 +97,25 @@ export class MeetingSocket {
     }
   }
 
-  subscribe(type: string, callback: (payload: any) => void) {
+  subscribe<T>(type: string, callback: (payload: T) => void): () => void {
     if (!this.onMessageCallbacks.has(type)) {
       this.onMessageCallbacks.set(type, new Set());
     }
-    this.onMessageCallbacks.get(type)!.add(callback);
+    this.onMessageCallbacks.get(type)!.add(callback as (payload: unknown) => void);
     return () => this.unsubscribe(type, callback);
   }
 
-  unsubscribe(type: string, callback: (payload: any) => void) {
+  unsubscribe<T>(type: string, callback: (payload: T) => void): void {
     const callbacks = this.onMessageCallbacks.get(type);
     if (callbacks) {
-      callbacks.delete(callback);
+      callbacks.delete(callback as (payload: unknown) => void);
       if (callbacks.size === 0) {
         this.onMessageCallbacks.delete(type);
       }
     }
   }
 
-  private trigger(type: string, payload: any) {
+  private trigger(type: string, payload: unknown): void {
     const callbacks = this.onMessageCallbacks.get(type);
     if (callbacks) {
       callbacks.forEach((callback) => callback(payload));

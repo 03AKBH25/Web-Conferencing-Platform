@@ -1,14 +1,53 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { Participant, ChatMessage, ConnectionState, Meeting } from '../types/meeting';
+import { Participant, ChatMessage, Meeting } from '../types/meeting';
 import { useLocalMedia } from './useLocalMedia';
 import { useMeetingSocket } from './useMeetingSocket';
 import { ICE_SERVERS_CONFIG } from '../lib/webrtc';
+import { MeetingSocket } from '../lib/socket';
+
+interface MeetingStatePayload {
+  meeting_id: string;
+  title: string;
+  status: 'scheduled' | 'active' | 'ended' | 'cancelled';
+  participants: Participant[];
+}
+
+interface ParticipantJoinedPayload {
+  participant: Participant;
+}
+
+interface ParticipantLeftPayload {
+  session_id: string;
+}
+
+interface WebRTCOfferPayload {
+  from: string;
+  sdp: RTCSessionDescriptionInit;
+}
+
+interface WebRTCAnswerPayload {
+  from: string;
+  sdp: RTCSessionDescriptionInit;
+}
+
+interface WebRTCICECandidatePayload {
+  from: string;
+  candidate: RTCIceCandidateInit;
+}
+
+interface MediaStateChangedPayload {
+  session_id: string;
+  enabled: boolean;
+}
+
+interface ScreenSharePayload {
+  session_id: string;
+}
 
 export function useWebRTC(
   meetingId: string | null,
   sessionId: string | null,
-  participantId: number | null,
-  displayName: string | null
+  participantId: number | null
 ) {
   const [remoteParticipants, setRemoteParticipants] = useState<Participant[]>([]);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -38,203 +77,6 @@ export function useWebRTC(
     localStreamRef.current = localStream;
   }, [localStream]);
 
-  // Main callback to route incoming WebSocket events
-  const handleWebSocketMessage = useCallback(async (socket: any) => {
-    if (!socket) return;
-
-    // 1. Initial state synchronization
-    const unsubscribeState = socket.subscribe('meeting_state', (payload: any) => {
-      console.log('Received meeting_state:', payload);
-      setMeetingDetails({
-        meeting_id: payload.meeting_id,
-        title: payload.title,
-        description: '',
-        status: payload.status,
-        meeting_type: 'instant', // default placeholder
-        invite_link: ''
-      });
-
-      // Initialize remote participants
-      const peers = payload.participants as Participant[];
-      setRemoteParticipants(peers);
-
-      // We are the newly joined user, so we initiate connections to ALL existing peers
-      peers.forEach(async (peer) => {
-        await initiatePeerConnection(peer.session_id, peer.display_name, peer.is_host, socket);
-      });
-    });
-
-    // 2. Another participant joined
-    const unsubscribeJoined = socket.subscribe('participant_joined', (payload: any) => {
-      const newPeer = payload.participant as Participant;
-      console.log('Participant joined:', newPeer);
-      
-      setRemoteParticipants((prev) => {
-        if (prev.some(p => p.session_id === newPeer.session_id)) return prev;
-        return [...prev, newPeer];
-      });
-      // Do not initiate connection here: the newly joined participant will offer to us
-    });
-
-    // 3. Another participant left
-    const unsubscribeLeft = socket.subscribe('participant_left', (payload: any) => {
-      const leftSessionId = payload.session_id;
-      console.log('Participant left:', leftSessionId);
-      closePeerConnection(leftSessionId);
-    });
-
-    // 4. WebRTC Offer
-    const unsubscribeOffer = socket.subscribe('webrtc_offer', async (payload: any) => {
-      const fromSessionId = payload.from;
-      console.log('Received WebRTC offer from:', fromSessionId);
-      
-      let pc = peerConnections.current.get(fromSessionId);
-      if (!pc) {
-        // Find user display name
-        const peerInfo = remoteParticipants.find(p => p.session_id === fromSessionId);
-        const name = peerInfo ? peerInfo.display_name : 'Guest';
-        const isHost = peerInfo ? peerInfo.is_host : false;
-        pc = await initiatePeerConnection(fromSessionId, name, isHost, socket, false);
-      }
-
-      try {
-        await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-        
-        socket.send('webrtc_answer', {
-          target: fromSessionId,
-          sdp: answer
-        });
-
-        // Apply any queued ICE candidates
-        const queue = iceQueueMap.current.get(fromSessionId);
-        if (queue) {
-          for (const cand of queue) {
-            await pc.addIceCandidate(new RTCIceCandidate(cand));
-          }
-          iceQueueMap.current.delete(fromSessionId);
-        }
-      } catch (err) {
-        console.error('Error handling WebRTC offer:', err);
-      }
-    });
-
-    // 5. WebRTC Answer
-    const unsubscribeAnswer = socket.subscribe('webrtc_answer', async (payload: any) => {
-      const fromSessionId = payload.from;
-      console.log('Received WebRTC answer from:', fromSessionId);
-      
-      const pc = peerConnections.current.get(fromSessionId);
-      if (pc) {
-        try {
-          await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
-          
-          // Apply any queued ICE candidates
-          const queue = iceQueueMap.current.get(fromSessionId);
-          if (queue) {
-            for (const cand of queue) {
-              await pc.addIceCandidate(new RTCIceCandidate(cand));
-            }
-            iceQueueMap.current.delete(fromSessionId);
-          }
-        } catch (err) {
-          console.error('Error setting remote description on answer:', err);
-        }
-      }
-    });
-
-    // 6. WebRTC ICE Candidate
-    const unsubscribeIce = socket.subscribe('webrtc_ice_candidate', async (payload: any) => {
-      const fromSessionId = payload.from;
-      const candidate = payload.candidate;
-      
-      const pc = peerConnections.current.get(fromSessionId);
-      if (pc) {
-        try {
-          if (pc.remoteDescription && pc.remoteDescription.type) {
-            await pc.addIceCandidate(new RTCIceCandidate(candidate));
-          } else {
-            // Queue candidate
-            if (!iceQueueMap.current.has(fromSessionId)) {
-              iceQueueMap.current.set(fromSessionId, []);
-            }
-            iceQueueMap.current.get(fromSessionId)!.push(candidate);
-          }
-        } catch (err) {
-          console.error('Error adding remote ICE candidate:', err);
-        }
-      }
-    });
-
-    // 7. State changes
-    const unsubscribeAudio = socket.subscribe('audio_state_changed', (payload: any) => {
-      setRemoteParticipants((prev) =>
-        prev.map((p) =>
-          p.session_id === payload.session_id ? { ...p, audio_enabled: payload.enabled } : p
-        )
-      );
-    });
-
-    const unsubscribeVideo = socket.subscribe('video_state_changed', (payload: any) => {
-      setRemoteParticipants((prev) =>
-        prev.map((p) =>
-          p.session_id === payload.session_id ? { ...p, video_enabled: payload.enabled } : p
-        )
-      );
-    });
-
-    const unsubscribeScreenStart = socket.subscribe('screen_share_started', (payload: any) => {
-      setRemoteParticipants((prev) =>
-        prev.map((p) =>
-          p.session_id === payload.session_id ? { ...p, is_screen_sharing: true } : p
-        )
-      );
-    });
-
-    const unsubscribeScreenStop = socket.subscribe('screen_share_stopped', (payload: any) => {
-      setRemoteParticipants((prev) =>
-        prev.map((p) =>
-          p.session_id === payload.session_id ? { ...p, is_screen_sharing: false } : p
-        )
-      );
-    });
-
-    // 8. Chat
-    const unsubscribeChat = socket.subscribe('chat_message', (payload: any) => {
-      setChatMessages((prev) => [...prev, payload]);
-    });
-
-    // 9. Host Mute All
-    const unsubscribeMuteAll = socket.subscribe('mute_all', () => {
-      console.log('Host triggered mute all.');
-      if (localStreamRef.current) {
-        const audioTracks = localStreamRef.current.getAudioTracks();
-        audioTracks.forEach(track => {
-          track.enabled = false;
-        });
-        // Sync state representation
-        toggleLocalMic(); // force local mic sync call
-        socket.send('audio_state_changed', { enabled: false });
-      }
-    });
-
-    return () => {
-      unsubscribeState();
-      unsubscribeJoined();
-      unsubscribeLeft();
-      unsubscribeOffer();
-      unsubscribeAnswer();
-      unsubscribeIce();
-      unsubscribeAudio();
-      unsubscribeVideo();
-      unsubscribeScreenStart();
-      unsubscribeScreenStop();
-      unsubscribeChat();
-      unsubscribeMuteAll();
-    };
-  }, [remoteParticipants, toggleLocalMic]);
-
   // Hook WebSocket and register listeners
   const { connectionState, socket } = useMeetingSocket(
     meetingId,
@@ -242,26 +84,23 @@ export function useWebRTC(
     participantId
   );
 
-  useEffect(() => {
-    let cleanupWS: () => void = () => {};
-    
-    if (socket && connectionState === 'connected') {
-      handleWebSocketMessage(socket).then((clean) => {
-        if (clean) cleanupWS = clean;
-      });
+  // Close peer connection helper
+  const closePeerConnection = useCallback((remoteSessionId: string) => {
+    const pc = peerConnections.current.get(remoteSessionId);
+    if (pc) {
+      pc.close();
+      peerConnections.current.delete(remoteSessionId);
     }
-
-    return () => {
-      cleanupWS();
-    };
-  }, [socket, connectionState, handleWebSocketMessage]);
+    iceQueueMap.current.delete(remoteSessionId);
+    setRemoteParticipants((prev) => prev.filter(p => p.session_id !== remoteSessionId));
+  }, []);
 
   // Peer connection instantiator helper
-  const initiatePeerConnection = async (
+  const initiatePeerConnection = useCallback(async (
     remoteSessionId: string,
-    remoteName: string,
-    isHost: boolean,
-    socket: any,
+    _remoteName: string,
+    _isHost: boolean,
+    socketInst: MeetingSocket,
     createOffer = true
   ) => {
     console.log(`Initiating Peer Connection for session: ${remoteSessionId}, createOffer=${createOffer}`);
@@ -278,8 +117,8 @@ export function useWebRTC(
 
     // Capture ICE candidates
     pc.onicecandidate = (event) => {
-      if (event.candidate && socket) {
-        socket.send('webrtc_ice_candidate', {
+      if (event.candidate) {
+        socketInst.send('webrtc_ice_candidate', {
           target: remoteSessionId,
           candidate: event.candidate
         });
@@ -305,11 +144,11 @@ export function useWebRTC(
       }
     };
 
-    if (createOffer && socket) {
+    if (createOffer) {
       try {
         const offer = await pc.createOffer();
         await pc.setLocalDescription(offer);
-        socket.send('webrtc_offer', {
+        socketInst.send('webrtc_offer', {
           target: remoteSessionId,
           sdp: offer
         });
@@ -319,17 +158,212 @@ export function useWebRTC(
     }
 
     return pc;
-  };
+  }, [closePeerConnection]);
 
-  const closePeerConnection = (remoteSessionId: string) => {
-    const pc = peerConnections.current.get(remoteSessionId);
-    if (pc) {
-      pc.close();
-      peerConnections.current.delete(remoteSessionId);
+  // Main callback to route incoming WebSocket events
+  const handleWebSocketMessage = useCallback(async (socketInst: MeetingSocket) => {
+    // 1. Initial state synchronization
+    const unsubscribeState = socketInst.subscribe<MeetingStatePayload>('meeting_state', (payload) => {
+      console.log('Received meeting_state:', payload);
+      setMeetingDetails({
+        meeting_id: payload.meeting_id,
+        title: payload.title,
+        description: '',
+        status: payload.status,
+        meeting_type: 'instant', // default placeholder
+        invite_link: ''
+      });
+
+      // Initialize remote participants
+      const peers = payload.participants;
+      setRemoteParticipants(peers);
+
+      // We are the newly joined user, so we initiate connections to ALL existing peers
+      peers.forEach(async (peer) => {
+        await initiatePeerConnection(peer.session_id, peer.display_name, peer.is_host, socketInst);
+      });
+    });
+
+    // 2. Another participant joined
+    const unsubscribeJoined = socketInst.subscribe<ParticipantJoinedPayload>('participant_joined', (payload) => {
+      const newPeer = payload.participant;
+      console.log('Participant joined:', newPeer);
+      
+      setRemoteParticipants((prev) => {
+        if (prev.some(p => p.session_id === newPeer.session_id)) return prev;
+        return [...prev, newPeer];
+      });
+    });
+
+    // 3. Another participant left
+    const unsubscribeLeft = socketInst.subscribe<ParticipantLeftPayload>('participant_left', (payload) => {
+      const leftSessionId = payload.session_id;
+      console.log('Participant left:', leftSessionId);
+      closePeerConnection(leftSessionId);
+    });
+
+    // 4. WebRTC Offer
+    const unsubscribeOffer = socketInst.subscribe<WebRTCOfferPayload>('webrtc_offer', async (payload) => {
+      const fromSessionId = payload.from;
+      console.log('Received WebRTC offer from:', fromSessionId);
+      
+      let pc = peerConnections.current.get(fromSessionId);
+      if (!pc) {
+        pc = await initiatePeerConnection(fromSessionId, 'Guest', false, socketInst, false);
+      }
+
+      try {
+        await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        
+        socketInst.send('webrtc_answer', {
+          target: fromSessionId,
+          sdp: answer
+        });
+
+        // Apply any queued ICE candidates
+        const queue = iceQueueMap.current.get(fromSessionId);
+        if (queue) {
+          for (const cand of queue) {
+            await pc.addIceCandidate(new RTCIceCandidate(cand));
+          }
+          iceQueueMap.current.delete(fromSessionId);
+        }
+      } catch (err) {
+        console.error('Error handling WebRTC offer:', err);
+      }
+    });
+
+    // 5. WebRTC Answer
+    const unsubscribeAnswer = socketInst.subscribe<WebRTCAnswerPayload>('webrtc_answer', async (payload) => {
+      const fromSessionId = payload.from;
+      console.log('Received WebRTC answer from:', fromSessionId);
+      
+      const pc = peerConnections.current.get(fromSessionId);
+      if (pc) {
+        try {
+          await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+          
+          // Apply any queued ICE candidates
+          const queue = iceQueueMap.current.get(fromSessionId);
+          if (queue) {
+            for (const cand of queue) {
+              await pc.addIceCandidate(new RTCIceCandidate(cand));
+            }
+            iceQueueMap.current.delete(fromSessionId);
+          }
+        } catch (err) {
+          console.error('Error setting remote description on answer:', err);
+        }
+      }
+    });
+
+    // 6. WebRTC ICE Candidate
+    const unsubscribeIce = socketInst.subscribe<WebRTCICECandidatePayload>('webrtc_ice_candidate', async (payload) => {
+      const fromSessionId = payload.from;
+      const candidate = payload.candidate;
+      
+      const pc = peerConnections.current.get(fromSessionId);
+      if (pc) {
+        try {
+          if (pc.remoteDescription && pc.remoteDescription.type) {
+            await pc.addIceCandidate(new RTCIceCandidate(candidate));
+          } else {
+            // Queue candidate
+            if (!iceQueueMap.current.has(fromSessionId)) {
+              iceQueueMap.current.set(fromSessionId, []);
+            }
+            iceQueueMap.current.get(fromSessionId)!.push(candidate);
+          }
+        } catch (err) {
+          console.error('Error adding remote ICE candidate:', err);
+        }
+      }
+    });
+
+    // 7. State changes
+    const unsubscribeAudio = socketInst.subscribe<MediaStateChangedPayload>('audio_state_changed', (payload) => {
+      setRemoteParticipants((prev) =>
+        prev.map((p) =>
+          p.session_id === payload.session_id ? { ...p, audio_enabled: payload.enabled } : p
+        )
+      );
+    });
+
+    const unsubscribeVideo = socketInst.subscribe<MediaStateChangedPayload>('video_state_changed', (payload) => {
+      setRemoteParticipants((prev) =>
+        prev.map((p) =>
+          p.session_id === payload.session_id ? { ...p, video_enabled: payload.enabled } : p
+        )
+      );
+    });
+
+    const unsubscribeScreenStart = socketInst.subscribe<ScreenSharePayload>('screen_share_started', (payload) => {
+      setRemoteParticipants((prev) =>
+        prev.map((p) =>
+          p.session_id === payload.session_id ? { ...p, is_screen_sharing: true } : p
+        )
+      );
+    });
+
+    const unsubscribeScreenStop = socketInst.subscribe<ScreenSharePayload>('screen_share_stopped', (payload) => {
+      setRemoteParticipants((prev) =>
+        prev.map((p) =>
+          p.session_id === payload.session_id ? { ...p, is_screen_sharing: false } : p
+        )
+      );
+    });
+
+    // 8. Chat
+    const unsubscribeChat = socketInst.subscribe<ChatMessage>('chat_message', (payload) => {
+      setChatMessages((prev) => [...prev, payload]);
+    });
+
+    // 9. Host Mute All
+    const unsubscribeMuteAll = socketInst.subscribe<void>('mute_all', () => {
+      console.log('Host triggered mute all.');
+      if (localStreamRef.current) {
+        const audioTracks = localStreamRef.current.getAudioTracks();
+        audioTracks.forEach(track => {
+          track.enabled = false;
+        });
+        // Sync state representation
+        toggleLocalMic(); 
+        socketInst.send('audio_state_changed', { enabled: false });
+      }
+    });
+
+    return () => {
+      unsubscribeState();
+      unsubscribeJoined();
+      unsubscribeLeft();
+      unsubscribeOffer();
+      unsubscribeAnswer();
+      unsubscribeIce();
+      unsubscribeAudio();
+      unsubscribeVideo();
+      unsubscribeScreenStart();
+      unsubscribeScreenStop();
+      unsubscribeChat();
+      unsubscribeMuteAll();
+    };
+  }, [initiatePeerConnection, closePeerConnection, toggleLocalMic]);
+
+  // Handle socket subscription registration
+  useEffect(() => {
+    let cleanupWS: () => void = () => {};
+    
+    if (socket && connectionState === 'connected') {
+      handleWebSocketMessage(socket).then((clean) => {
+        if (clean) cleanupWS = clean;
+      });
     }
-    iceQueueMap.current.delete(remoteSessionId);
-    setRemoteParticipants((prev) => prev.filter(p => p.session_id !== remoteSessionId));
-  };
+
+    return () => {
+      cleanupWS();
+    };
+  }, [socket, connectionState, handleWebSocketMessage]);
 
   // Replace video track helper (for screen sharing toggle)
   const replaceVideoTrack = useCallback((newTrack: MediaStreamTrack) => {

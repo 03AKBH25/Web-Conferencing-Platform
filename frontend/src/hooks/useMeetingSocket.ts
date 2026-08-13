@@ -30,16 +30,22 @@ export function useMeetingSocket(
     });
 
     socketRef.current = socket;
-    setSocketInstance(socket);
+    
+    // Avoid calling setState synchronously inside the effect body to prevent cascading renders
+    const timer = setTimeout(() => {
+      setSocketInstance(socket);
+    }, 0);
+    
     socket.connect();
 
     return () => {
       console.log('Disconnecting WebSocket due to unmount');
+      clearTimeout(timer);
       socket.disconnect();
       socketRef.current = null;
       setSocketInstance(null);
     };
-  }, [meetingId, sessionId, participantId]);
+  }, [meetingId, sessionId, participantId, onStateChangeCallback]);
 
   return {
     connectionState,

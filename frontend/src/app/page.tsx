@@ -32,9 +32,10 @@ export default function Home() {
 
       // Redirect to meeting room with demo host parameter
       router.push(`/meeting/${data.meeting_id}?demo_user=alex`);
-    } catch (err: any) {
+    } catch (err) {
       console.error(err);
-      setErrorText(err.message || 'Server connection failed. Is the Django backend running on port 8000?');
+      const message = err instanceof Error ? err.message : 'Server connection failed. Is the Django backend running on port 8000?';
+      setErrorText(message);
       setLoading(false);
     }
   };
