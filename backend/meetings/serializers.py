@@ -10,6 +10,7 @@ class MeetingParticipantSerializer(serializers.ModelSerializer):
         model = MeetingParticipant
         fields = [
             'id', 
+            'user',
             'display_name', 
             'session_id', 
             'is_host', 
