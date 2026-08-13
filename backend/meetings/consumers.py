@@ -1,7 +1,9 @@
 import json
 import logging
+import asyncio
 from urllib.parse import parse_qs
 from django.utils import timezone
+from django.conf import settings
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 from channels.db import database_sync_to_async
 
@@ -98,31 +100,67 @@ class MeetingRoomConsumer(AsyncJsonWebsocketConsumer):
     async def disconnect(self, close_code):
         logger.info(f"WebSocket Disconnect: session={self.session_id if hasattr(self, 'session_id') else 'unknown'} close_code={close_code}")
         
-        if hasattr(self, 'session_id') and self.session_id in self.active_connections:
-            self.active_connections.pop(self.session_id, None)
+        if hasattr(self, 'session_id'):
+            if self.active_connections.get(self.session_id) == self.channel_name:
+                self.active_connections.pop(self.session_id, None)
 
         if hasattr(self, 'room_group_name'):
-            # Set participant inactive in database and stamp left time
-            await self.set_participant_active(False)
-
-            # Leave group
+            # Leave group immediately
             await self.channel_layer.group_discard(
                 self.room_group_name,
                 self.channel_name
             )
 
-            # Broadcast participant_left to group
-            await self.channel_layer.group_send(
-                self.room_group_name,
-                {
-                    "type": "broadcast_left",
-                    "session_id": self.session_id,
-                    "payload": {
-                        "participant_id": self.participant_id,
-                        "session_id": self.session_id
+            # Check if this was an intentional leave or end-meeting
+            is_still_active_and_meeting_open = await self.check_participant_active_and_meeting_open_db()
+
+            if not is_still_active_and_meeting_open:
+                # Immediate disconnect cleanup
+                await self.channel_layer.group_send(
+                    self.room_group_name,
+                    {
+                        "type": "broadcast_left",
+                        "session_id": self.session_id,
+                        "payload": {
+                            "participant_id": self.participant_id,
+                            "session_id": self.session_id
+                        }
                     }
+                )
+            else:
+                # Temporary disconnect. Schedule a grace period to check for reconnection.
+                asyncio.create_task(self.handle_temporary_disconnect_grace_period())
+
+    async def handle_temporary_disconnect_grace_period(self):
+        grace_period = getattr(settings, 'WEBSOCKET_GRACE_PERIOD', 5)
+        await asyncio.sleep(grace_period)
+
+        # Check if the session_id is back in active_connections (meaning they reconnected)
+        if self.session_id in self.active_connections:
+            logger.info(f"Participant {self.session_id} successfully reconnected within grace period.")
+            return
+
+        # Check if the meeting or participant state changed in the DB during sleep
+        is_still_active_and_meeting_open = await self.check_participant_active_and_meeting_open_db()
+        if not is_still_active_and_meeting_open:
+            return
+
+        # They did not reconnect. Mark them inactive and auto-end meeting if last participant.
+        logger.info(f"Participant {self.session_id} did not reconnect. Marking inactive.")
+        await self.set_participant_active(False)
+
+        # Broadcast participant_left to the group
+        await self.channel_layer.group_send(
+            self.room_group_name,
+            {
+                "type": "broadcast_left",
+                "session_id": self.session_id,
+                "payload": {
+                    "participant_id": self.participant_id,
+                    "session_id": self.session_id
                 }
-            )
+            }
+        )
 
     async def receive_json(self, content, **kwargs):
         msg_type = content.get('type')
@@ -367,6 +405,18 @@ class MeetingRoomConsumer(AsyncJsonWebsocketConsumer):
             return None, "MEETING_NOT_FOUND"
         except MeetingParticipant.DoesNotExist:
             return None, "PARTICIPANT_NOT_FOUND"
+
+    @database_sync_to_async
+    def check_participant_active_and_meeting_open_db(self):
+        try:
+            meeting = Meeting.objects.get(meeting_id=self.meeting_id)
+            if meeting.status in [Meeting.STATUS_ENDED, Meeting.STATUS_CANCELLED]:
+                return False
+            
+            participant = MeetingParticipant.objects.get(id=self.participant_id)
+            return participant.is_active
+        except (Meeting.DoesNotExist, MeetingParticipant.DoesNotExist):
+            return False
 
     @database_sync_to_async
     def set_participant_active(self, is_active):

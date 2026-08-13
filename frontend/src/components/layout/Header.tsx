@@ -11,7 +11,7 @@ import {
   Check,
   CheckCheck
 } from 'lucide-react';
-import { api, UserProfile, NotificationItem } from '../../lib/api';
+import { api, UserProfile, NotificationItem, NotificationsResponse } from '../../lib/api';
 import { Meeting } from '../../types/meeting';
 import { useToast } from '../common/Toast';
 
@@ -32,6 +32,8 @@ export const Header: React.FC<HeaderProps> = ({ onMenuToggle }) => {
   // Notification state
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [showNotificationDropdown, setShowNotificationDropdown] = useState(false);
+  const [notificationLoading, setNotificationLoading] = useState(false);
+  const [notificationError, setNotificationError] = useState<string | null>(null);
 
   // Profile state
   const [profile, setProfile] = useState<UserProfile | null>(null);
@@ -43,9 +45,19 @@ export const Header: React.FC<HeaderProps> = ({ onMenuToggle }) => {
   const profileRef = useRef<HTMLDivElement>(null);
 
   const loadNotifications = () => {
+    setNotificationLoading(true);
+    setNotificationError(null);
     api.getNotifications()
-      .then(setNotifications)
-      .catch((err) => console.error('Failed to load notifications:', err));
+      .then((data: NotificationsResponse) => {
+        setNotifications(data.notifications);
+      })
+      .catch((err: unknown) => {
+        console.error('Failed to load notifications:', err);
+        setNotificationError('Failed to load notifications.');
+      })
+      .finally(() => {
+        setNotificationLoading(false);
+      });
   };
 
   // Fetch initial profile & notifications
@@ -54,7 +66,10 @@ export const Header: React.FC<HeaderProps> = ({ onMenuToggle }) => {
       .then(setProfile)
       .catch((err) => console.error('Failed to load profile:', err));
 
-    loadNotifications();
+    const timer = setTimeout(() => {
+      loadNotifications();
+    }, 0);
+    return () => clearTimeout(timer);
   }, []);
 
   // Debounced search logic
@@ -229,8 +244,12 @@ export const Header: React.FC<HeaderProps> = ({ onMenuToggle }) => {
                 )}
               </div>
               <div className="flex-1 overflow-y-auto divide-y divide-slate-100 max-h-72">
-                {notifications.length === 0 ? (
-                  <div className="p-6 text-center text-sm text-slate-450">No notifications</div>
+                {notificationLoading ? (
+                  <div className="p-6 text-center text-sm text-slate-400">Loading notifications...</div>
+                ) : notificationError ? (
+                  <div className="p-6 text-center text-sm text-rose-500">{notificationError}</div>
+                ) : notifications.length === 0 ? (
+                  <div className="p-6 text-center text-sm text-slate-455">No notifications</div>
                 ) : (
                   notifications.map((notif) => (
                     <div

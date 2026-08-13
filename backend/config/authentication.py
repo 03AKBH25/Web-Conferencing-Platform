@@ -1,3 +1,7 @@
+# WARNING: This is a demo-only authentication backend. It does NOT verify credentials 
+# or validate secrets. It is designed solely for classroom/demo testing and must NEVER 
+# be used in a production environment.
+
 from django.contrib.auth.models import User
 from rest_framework import authentication
 

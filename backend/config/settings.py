@@ -140,3 +140,6 @@ CHANNEL_LAYERS = {
         'BACKEND': 'channels.layers.InMemoryChannelLayer',
     },
 }
+
+WEBSOCKET_GRACE_PERIOD = 5
+

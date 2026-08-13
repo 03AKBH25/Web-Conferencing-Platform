@@ -18,6 +18,11 @@ export interface NotificationItem {
   meeting_id?: string;
 }
 
+export interface NotificationsResponse {
+  unread_count: number;
+  notifications: NotificationItem[];
+}
+
 async function fetchJson<T>(path: string, options?: RequestInit): Promise<T> {
   const url = `${API_BASE_URL}${path}`;
   const response = await fetch(url, {
@@ -101,9 +106,10 @@ export const api = {
     });
   },
 
-  leaveMeeting: (meetingId: string): Promise<{ success: boolean }> => {
-    return fetchJson<{ success: boolean }>(`/meetings/${meetingId}/leave/`, {
+  leaveMeeting: (meetingId: string, participantId: number): Promise<{ message: string }> => {
+    return fetchJson<{ message: string }>(`/meetings/${meetingId}/leave/`, {
       method: 'POST',
+      body: JSON.stringify({ participant_id: participantId }),
     });
   },
 
@@ -120,8 +126,8 @@ export const api = {
   },
 
   // Notifications
-  getNotifications: (): Promise<NotificationItem[]> => {
-    return fetchJson<NotificationItem[]>('/notifications/');
+  getNotifications: (): Promise<NotificationsResponse> => {
+    return fetchJson<NotificationsResponse>('/notifications/');
   },
 
   markNotificationRead: (id: number): Promise<NotificationItem> => {
@@ -130,8 +136,8 @@ export const api = {
     });
   },
 
-  markAllNotificationsRead: (): Promise<{ success: boolean }> => {
-    return fetchJson<{ success: boolean }>('/notifications/read-all/', {
+  markAllNotificationsRead: (): Promise<{ message: string }> => {
+    return fetchJson<{ message: string }>('/notifications/read-all/', {
       method: 'POST',
     });
   },

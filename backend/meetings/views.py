@@ -331,7 +331,13 @@ class ParticipantDetailView(views.APIView):
 
         # Track event log details
         if audio_enabled is not None:
-            audio_val = bool(audio_enabled)
+            if type(audio_enabled) is not bool:
+                raise CustomAPIException(
+                    message="audio_enabled must be a boolean value.",
+                    code="VALIDATION_ERROR",
+                    status_code=status.HTTP_400_BAD_REQUEST
+                )
+            audio_val = audio_enabled
             if participant.audio_enabled != audio_val:
                 participant.audio_enabled = audio_val
                 event_type = MeetingEvent.EVENT_PARTICIPANT_MUTED if not audio_val else MeetingEvent.EVENT_PARTICIPANT_UNMUTED
@@ -342,7 +348,13 @@ class ParticipantDetailView(views.APIView):
                 )
         
         if video_enabled is not None:
-            video_val = bool(video_enabled)
+            if type(video_enabled) is not bool:
+                raise CustomAPIException(
+                    message="video_enabled must be a boolean value.",
+                    code="VALIDATION_ERROR",
+                    status_code=status.HTTP_400_BAD_REQUEST
+                )
+            video_val = video_enabled
             if participant.video_enabled != video_val:
                 participant.video_enabled = video_val
                 event_type = MeetingEvent.EVENT_CAMERA_DISABLED if not video_val else MeetingEvent.EVENT_CAMERA_ENABLED

@@ -4,6 +4,7 @@ import { useLocalMedia } from './useLocalMedia';
 import { useMeetingSocket } from './useMeetingSocket';
 import { ICE_SERVERS_CONFIG } from '../lib/webrtc';
 import { MeetingSocket } from '../lib/socket';
+import { api } from '../lib/api';
 
 interface MeetingStatePayload {
   meeting_id: string;
@@ -441,10 +442,16 @@ export function useWebRTC(
     peerConnections.current.clear();
     iceQueueMap.current.clear();
     
+    if (meetingId && participantId) {
+      api.leaveMeeting(meetingId, participantId).catch((err) => {
+        console.error('Failed to leave meeting via API:', err);
+      });
+    }
+
     if (socket) {
       socket.disconnect();
     }
-  }, [socket, cleanupMedia]);
+  }, [socket, cleanupMedia, meetingId, participantId]);
 
   return {
     localStream,

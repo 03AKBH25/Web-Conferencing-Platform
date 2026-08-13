@@ -1,6 +1,7 @@
 from django.contrib.auth.models import User
 from django.utils import timezone
 from django.urls import reverse
+from django.test import override_settings
 from rest_framework import status
 from rest_framework.test import APITestCase
 from meetings.models import Meeting, MeetingParticipant, MeetingMessage, MeetingEvent
@@ -327,9 +328,47 @@ class MeetingAPITestCase(APITestCase):
         response_count = self.client.get(url_list, **self.host_headers)
         self.assertEqual(response_count.data['unread_count'], 0)
 
+    def test_participant_media_updates_boolean_validation(self):
+        """PATCH /api/meetings/{meeting_id}/participants/{participant_id}/ accepts correct booleans and rejects invalid strings/integers."""
+        meeting = Meeting.objects.create(
+            meeting_id='123-456-789',
+            title='Sample Meeting',
+            host=self.host,
+            status=Meeting.STATUS_ACTIVE
+        )
+        
+        participant = MeetingParticipant.objects.create(
+            meeting=meeting,
+            display_name="Bob Vance",
+            session_id="bob-sess-abc",
+            is_active=True,
+            audio_enabled=True,
+            video_enabled=True
+        )
+        
+        url = reverse('participant-detail', kwargs={'meeting_id': '123-456-789', 'participant_id': participant.id})
+        
+        # 1. Test sending valid booleans (True/False)
+        response = self.client.patch(url, {"audio_enabled": False, "video_enabled": False}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        participant.refresh_from_db()
+        self.assertFalse(participant.audio_enabled)
+        self.assertFalse(participant.video_enabled)
+        
+        # 2. Test sending invalid string values like "false"
+        response = self.client.patch(url, {"audio_enabled": "false"}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data['error']['code'], "VALIDATION_ERROR")
+        
+        # 3. Test sending invalid integer values like 0
+        response = self.client.patch(url, {"video_enabled": 0}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data['error']['code'], "VALIDATION_ERROR")
+
 
 from django.test import TransactionTestCase
 from channels.testing import WebsocketCommunicator
+from channels.db import database_sync_to_async
 from config.asgi import application
 
 class MeetingWebSocketTestCase(TransactionTestCase):
@@ -413,5 +452,170 @@ class MeetingWebSocketTestCase(TransactionTestCase):
         self.assertFalse(response['payload']['enabled'])
 
         # Clean up
+        await communicator.disconnect()
+
+    @override_settings(WEBSOCKET_GRACE_PERIOD=0.1)
+    async def test_websocket_temporary_disconnect_reconnect(self):
+        """WebSocket temporary disconnect followed by reconnect keeps participant active."""
+        @database_sync_to_async
+        def prepare_active_state():
+            self.meeting.status = Meeting.STATUS_ACTIVE
+            self.meeting.save()
+            self.participant.is_active = True
+            self.participant.save()
+        await prepare_active_state()
+
+        # Connect first socket
+        path = f"/ws/meetings/111-222-333/?session_id=alex-sess-ws&participant_id={self.participant.id}"
+        communicator = WebsocketCommunicator(application, path)
+        connected, _ = await communicator.connect()
+        self.assertTrue(connected)
+        await communicator.receive_json_from() # meet state
+
+        # Verify participant is active in DB
+        @database_sync_to_async
+        def check_active():
+            self.participant.refresh_from_db()
+            return self.participant.is_active, self.participant.meeting.status
+
+        is_active, meet_status = await check_active()
+        self.assertTrue(is_active)
+        self.assertEqual(meet_status, Meeting.STATUS_ACTIVE)
+
+        # Simulate disconnect
+        await communicator.disconnect()
+
+        # Immediately check DB: participant should still be active due to grace period!
+        is_active, meet_status = await check_active()
+        self.assertTrue(is_active)
+        self.assertEqual(meet_status, Meeting.STATUS_ACTIVE)
+
+        # Reconnect within the grace period (0.1s)
+        communicator2 = WebsocketCommunicator(application, path)
+        connected2, _ = await communicator2.connect()
+        self.assertTrue(connected2)
+        await communicator2.receive_json_from() # meet state
+
+        # Wait longer than grace period
+        import asyncio
+        await asyncio.sleep(0.2)
+
+        # Participant should still be active because they reconnected!
+        is_active, meet_status = await check_active()
+        self.assertTrue(is_active)
+        self.assertEqual(meet_status, Meeting.STATUS_ACTIVE)
+
+        await communicator2.disconnect()
+
+    @override_settings(WEBSOCKET_GRACE_PERIOD=0.1)
+    async def test_websocket_disconnect_grace_period_expires(self):
+        """WebSocket disconnect without reconnection deactivates participant after grace period."""
+        @database_sync_to_async
+        def prepare_active_state():
+            self.meeting.status = Meeting.STATUS_ACTIVE
+            self.meeting.save()
+            self.participant.is_active = True
+            self.participant.save()
+        await prepare_active_state()
+
+        path = f"/ws/meetings/111-222-333/?session_id=alex-sess-ws&participant_id={self.participant.id}"
+        communicator = WebsocketCommunicator(application, path)
+        connected, _ = await communicator.connect()
+        self.assertTrue(connected)
+        await communicator.receive_json_from() # meet state
+
+        @database_sync_to_async
+        def check_active():
+            self.participant.refresh_from_db()
+            return self.participant.is_active, self.participant.meeting.status
+
+        # Simulate disconnect
+        await communicator.disconnect()
+
+        # Wait longer than grace period
+        import asyncio
+        await asyncio.sleep(0.2)
+
+        # Since no reconnect happened, participant should be deactivated and meeting ended (since last participant left)
+        is_active, meet_status = await check_active()
+        self.assertFalse(is_active)
+        self.assertEqual(meet_status, Meeting.STATUS_ENDED)
+
+    @override_settings(WEBSOCKET_GRACE_PERIOD=0.1)
+    async def test_websocket_intentional_leave_no_grace_period(self):
+        """Intentional leave via API deactivates participant and ends meeting immediately without waiting for grace period."""
+        @database_sync_to_async
+        def prepare_active_state():
+            self.meeting.status = Meeting.STATUS_ACTIVE
+            self.meeting.save()
+            self.participant.is_active = True
+            self.participant.save()
+        await prepare_active_state()
+
+        # Join meeting to activate it
+        path = f"/ws/meetings/111-222-333/?session_id=alex-sess-ws&participant_id={self.participant.id}"
+        communicator = WebsocketCommunicator(application, path)
+        connected, _ = await communicator.connect()
+        self.assertTrue(connected)
+        await communicator.receive_json_from()
+
+        @database_sync_to_async
+        def check_active():
+            self.participant.refresh_from_db()
+            return self.participant.is_active, self.participant.meeting.status
+
+        # Perform intentional leave via service/API
+        @database_sync_to_async
+        def perform_leave():
+            from meetings.services import leave_meeting
+            self.participant.refresh_from_db()
+            leave_meeting(self.participant)
+            
+        await perform_leave()
+
+        # Verify immediately inactive and ended (no grace period delay)
+        is_active, meet_status = await check_active()
+        self.assertFalse(is_active)
+        self.assertEqual(meet_status, Meeting.STATUS_ENDED)
+
+        await communicator.disconnect()
+
+    @override_settings(WEBSOCKET_GRACE_PERIOD=0.1)
+    async def test_websocket_explicit_host_end_meeting(self):
+        """Explicit host end meeting via WebSocket terminates meeting and closes connections immediately."""
+        @database_sync_to_async
+        def prepare_active_state():
+            self.meeting.status = Meeting.STATUS_ACTIVE
+            self.meeting.save()
+            self.participant.is_active = True
+            self.participant.save()
+        await prepare_active_state()
+
+        path = f"/ws/meetings/111-222-333/?session_id=alex-sess-ws&participant_id={self.participant.id}"
+        communicator = WebsocketCommunicator(application, path)
+        connected, _ = await communicator.connect()
+        self.assertTrue(connected)
+        await communicator.receive_json_from()
+
+        @database_sync_to_async
+        def check_active():
+            self.participant.refresh_from_db()
+            return self.participant.is_active, self.participant.meeting.status
+
+        # Send end meeting event from client
+        await communicator.send_json_to({
+            "type": "meeting_ended",
+            "payload": {}
+        })
+
+        # Receive broadcast meeting ended
+        response = await communicator.receive_json_from()
+        self.assertEqual(response['type'], 'meeting_ended')
+
+        # Immediately check DB: meeting is ended and participant deactivated
+        is_active, meet_status = await check_active()
+        self.assertFalse(is_active)
+        self.assertEqual(meet_status, Meeting.STATUS_ENDED)
+
         await communicator.disconnect()
 
