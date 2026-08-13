@@ -3,8 +3,18 @@ import { DEFAULT_MEDIA_CONSTRAINTS } from '../lib/webrtc';
 
 export function useLocalMedia() {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
-  const [cameraEnabled, setCameraEnabled] = useState(true);
-  const [microphoneEnabled, setMicrophoneEnabled] = useState(true);
+  const [cameraEnabled, setCameraEnabled] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('syncmeet_pref_camera') !== 'false';
+    }
+    return true;
+  });
+  const [microphoneEnabled, setMicrophoneEnabled] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('syncmeet_pref_mic_muted') !== 'true';
+    }
+    return true;
+  });
   const [screenSharing, setScreenSharing] = useState(false);
   const [permissionError, setPermissionError] = useState<'camera_denied' | 'microphone_denied' | 'all_denied' | null>(null);
   
