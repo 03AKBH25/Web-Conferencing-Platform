@@ -326,3 +326,92 @@ class MeetingAPITestCase(APITestCase):
         # Verify unread count is now 0
         response_count = self.client.get(url_list, **self.host_headers)
         self.assertEqual(response_count.data['unread_count'], 0)
+
+
+from django.test import TransactionTestCase
+from channels.testing import WebsocketCommunicator
+from config.asgi import application
+
+class MeetingWebSocketTestCase(TransactionTestCase):
+
+    def setUp(self):
+        # Create host
+        self.host = User.objects.create_user(
+            username='alex',
+            email='alex@example.com',
+            first_name='Alex',
+            last_name='Johnson',
+            password='alexpassword'
+        )
+        
+        # Create meeting
+        self.meeting = Meeting.objects.create(
+            meeting_id='111-222-333',
+            title='WS Test Room',
+            host=self.host,
+            status=Meeting.STATUS_SCHEDULED,
+            meeting_type=Meeting.TYPE_INSTANT
+        )
+        
+        # Create participant
+        self.participant = MeetingParticipant.objects.create(
+            meeting=self.meeting,
+            display_name='Alex Johnson',
+            session_id='alex-sess-ws',
+            is_host=True,
+            is_active=False
+        )
+
+    async def test_websocket_connection_and_validation(self):
+        """WebSocket connection succeeds with valid credentials and receives initial state."""
+        path = f"/ws/meetings/111-222-333/?session_id=alex-sess-ws&participant_id={self.participant.id}"
+        communicator = WebsocketCommunicator(application, path)
+        connected, _ = await communicator.connect()
+        self.assertTrue(connected)
+
+        # Receive meeting state
+        response = await communicator.receive_json_from()
+        self.assertEqual(response['type'], 'meeting_state')
+        self.assertEqual(response['payload']['meeting_id'], '111-222-333')
+
+        # Clean up
+        await communicator.disconnect()
+
+    async def test_websocket_invalid_meeting(self):
+        """WebSocket connection rejects with MEETING_NOT_FOUND error for invalid meeting ID."""
+        path = f"/ws/meetings/999-999-999/?session_id=alex-sess-ws&participant_id={self.participant.id}"
+        communicator = WebsocketCommunicator(application, path)
+        connected, _ = await communicator.connect()
+        self.assertTrue(connected)
+
+        # Receive error
+        response = await communicator.receive_json_from()
+        self.assertEqual(response['type'], 'error')
+        self.assertEqual(response['payload']['code'], 'MEETING_NOT_FOUND')
+
+        await communicator.disconnect()
+
+    async def test_websocket_media_state_broadcast(self):
+        """WebSocket client can send state change which broadcasts back to them."""
+        path = f"/ws/meetings/111-222-333/?session_id=alex-sess-ws&participant_id={self.participant.id}"
+        communicator = WebsocketCommunicator(application, path)
+        connected, _ = await communicator.connect()
+        self.assertTrue(connected)
+
+        # Receive meeting state
+        await communicator.receive_json_from()
+
+        # Send media toggle message
+        await communicator.send_json_to({
+            "type": "audio_state_changed",
+            "payload": {"enabled": False}
+        })
+
+        # Receive broadcast state change
+        response = await communicator.receive_json_from()
+        self.assertEqual(response['type'], 'audio_state_changed')
+        self.assertFalse(response['payload']['enabled'])
+
+        # Clean up
+        await communicator.disconnect()
+
