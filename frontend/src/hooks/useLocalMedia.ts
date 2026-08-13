@@ -86,6 +86,15 @@ export function useLocalMedia() {
     }
   }, [localStream]);
 
+  const setMicrophoneEnabledState = useCallback((enabled: boolean) => {
+    if (localStream) {
+      localStream.getAudioTracks().forEach(track => {
+        track.enabled = enabled;
+      });
+    }
+    setMicrophoneEnabled(enabled);
+  }, [localStream]);
+
   const toggleCamera = useCallback(() => {
     if (localStream) {
       const videoTracks = localStream.getVideoTracks();
@@ -149,6 +158,7 @@ export function useLocalMedia() {
     permissionError,
     initLocalMedia,
     toggleMicrophone,
+    setMicrophoneEnabledState,
     toggleCamera,
     startScreenShare,
     stopScreenShare,

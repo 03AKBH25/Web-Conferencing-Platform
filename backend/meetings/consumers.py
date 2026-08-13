@@ -400,6 +400,8 @@ class MeetingRoomConsumer(AsyncJsonWebsocketConsumer):
                 meeting=meeting,
                 session_id=self.session_id
             )
+            if not participant.is_active and participant.left_at is not None:
+                return None, "PARTICIPANT_INACTIVE"
             return participant, None
         except Meeting.DoesNotExist:
             return None, "MEETING_NOT_FOUND"

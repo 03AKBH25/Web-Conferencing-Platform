@@ -619,3 +619,66 @@ class MeetingWebSocketTestCase(TransactionTestCase):
 
         await communicator.disconnect()
 
+    async def test_removed_participant_cannot_reconnect(self):
+        """Host removal keeps the participant inactive and rejects the same socket session if it reconnects."""
+        @database_sync_to_async
+        def prepare_participants():
+            self.meeting.status = Meeting.STATUS_ACTIVE
+            self.meeting.save()
+            self.participant.is_active = True
+            self.participant.save()
+            guest = MeetingParticipant.objects.create(
+                meeting=self.meeting,
+                display_name='Guest User',
+                session_id='guest-sess-ws',
+                is_host=False,
+                is_active=True
+            )
+            return guest.id
+
+        guest_id = await prepare_participants()
+
+        host_path = f"/ws/meetings/111-222-333/?session_id=alex-sess-ws&participant_id={self.participant.id}"
+        guest_path = f"/ws/meetings/111-222-333/?session_id=guest-sess-ws&participant_id={guest_id}"
+
+        host = WebsocketCommunicator(application, host_path)
+        connected, _ = await host.connect()
+        self.assertTrue(connected)
+        await host.receive_json_from()
+
+        guest = WebsocketCommunicator(application, guest_path)
+        connected, _ = await guest.connect()
+        self.assertTrue(connected)
+        await guest.receive_json_from()
+        await host.receive_json_from()
+
+        await host.send_json_to({
+            "type": "participant_removed",
+            "payload": {
+                "participant_id": guest_id,
+                "session_id": "guest-sess-ws"
+            }
+        })
+
+        guest_response = await guest.receive_json_from()
+        self.assertEqual(guest_response['type'], 'participant_removed')
+
+        @database_sync_to_async
+        def check_guest_inactive():
+            guest_participant = MeetingParticipant.objects.get(id=guest_id)
+            return guest_participant.is_active, guest_participant.left_at is not None
+
+        is_active, has_left_at = await check_guest_inactive()
+        self.assertFalse(is_active)
+        self.assertTrue(has_left_at)
+
+        reconnect = WebsocketCommunicator(application, guest_path)
+        connected, _ = await reconnect.connect()
+        self.assertTrue(connected)
+        reconnect_response = await reconnect.receive_json_from()
+        self.assertEqual(reconnect_response['type'], 'error')
+        self.assertEqual(reconnect_response['payload']['code'], 'PARTICIPANT_INACTIVE')
+
+        await guest.disconnect()
+        await reconnect.disconnect()
+        await host.disconnect()

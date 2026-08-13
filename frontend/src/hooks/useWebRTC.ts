@@ -21,6 +21,11 @@ interface ParticipantLeftPayload {
   session_id: string;
 }
 
+interface ParticipantRemovedPayload {
+  participant_id: number;
+  session_id: string;
+}
+
 interface WebRTCOfferPayload {
   from: string;
   sdp: RTCSessionDescriptionInit;
@@ -54,6 +59,7 @@ export function useWebRTC(
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [meetingDetails, setMeetingDetails] = useState<Meeting | null>(null);
   const [meetingEnded, setMeetingEnded] = useState(false);
+  const [removedFromMeeting, setRemovedFromMeeting] = useState(false);
   
   const peerConnections = useRef<Map<string, RTCPeerConnection>>(new Map());
   const iceQueueMap = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
@@ -68,6 +74,7 @@ export function useWebRTC(
     permissionError,
     initLocalMedia,
     toggleMicrophone: toggleLocalMic,
+    setMicrophoneEnabledState,
     toggleCamera: toggleLocalCam,
     startScreenShare: startLocalScreen,
     stopScreenShare: stopLocalScreen,
@@ -325,15 +332,20 @@ export function useWebRTC(
     // 9. Host Mute All
     const unsubscribeMuteAll = socketInst.subscribe<void>('mute_all', () => {
       console.log('Host triggered mute all.');
-      if (localStreamRef.current) {
-        const audioTracks = localStreamRef.current.getAudioTracks();
-        audioTracks.forEach(track => {
-          track.enabled = false;
-        });
-        // Sync state representation
-        toggleLocalMic(); 
-        socketInst.send('audio_state_changed', { enabled: false });
-      }
+      setMicrophoneEnabledState(false);
+      socketInst.send('audio_state_changed', { enabled: false });
+    });
+
+    const unsubscribeParticipantRemoved = socketInst.subscribe<ParticipantRemovedPayload>('participant_removed', (payload) => {
+      if (payload.session_id !== sessionId) return;
+
+      console.log('Removed from meeting by host.');
+      setRemovedFromMeeting(true);
+      cleanupMedia();
+      peerConnections.current.forEach((pc) => pc.close());
+      peerConnections.current.clear();
+      iceQueueMap.current.clear();
+      socketInst.disconnect();
     });
 
     const unsubscribeMeetingEnded = socketInst.subscribe<void>('meeting_ended', () => {
@@ -355,9 +367,10 @@ export function useWebRTC(
       unsubscribeScreenStop();
       unsubscribeChat();
       unsubscribeMuteAll();
+      unsubscribeParticipantRemoved();
       unsubscribeMeetingEnded();
     };
-  }, [initiatePeerConnection, closePeerConnection, toggleLocalMic, cleanupMedia]);
+  }, [initiatePeerConnection, closePeerConnection, setMicrophoneEnabledState, cleanupMedia, sessionId]);
 
   // Handle socket subscription registration
   useEffect(() => {
@@ -472,6 +485,7 @@ export function useWebRTC(
     permissionError,
     meetingDetails,
     meetingEnded,
+    removedFromMeeting,
     initLocalMedia,
     toggleMicrophone,
     toggleCamera,

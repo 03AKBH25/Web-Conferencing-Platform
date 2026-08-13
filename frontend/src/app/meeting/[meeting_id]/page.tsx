@@ -53,8 +53,11 @@ export default function MeetingPage() {
   // Auto check for host parameters from URL (e.g. ?demo_user=alex)
   useEffect(() => {
     if (isDemoHost) {
-      setIsHostCheck(true);
-      setDisplayName('Alex Johnson');
+      const timer = setTimeout(() => {
+        setIsHostCheck(true);
+        setDisplayName('Alex Johnson');
+      }, 0);
+      return () => clearTimeout(timer);
     }
   }, [isDemoHost]);
 
@@ -70,6 +73,7 @@ export default function MeetingPage() {
     permissionError,
     meetingDetails,
     meetingEnded,
+    removedFromMeeting,
     initLocalMedia,
     toggleMicrophone,
     toggleCamera,
@@ -161,6 +165,34 @@ export default function MeetingPage() {
             >
               View Meeting Details
             </button>
+            <button
+              onClick={() => router.push(`/`)}
+              className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded-xl transition-all text-sm shadow-md uppercase tracking-wider"
+            >
+              Return to Dashboard
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (removedFromMeeting) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center p-6 text-slate-100 font-sans">
+        <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-3xl p-8 shadow-2xl space-y-6 text-center animate-fade-in">
+          <div className="mx-auto w-16 h-16 rounded-full bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400">
+            <ShieldAlert className="w-8 h-8" />
+          </div>
+
+          <div className="space-y-2">
+            <h1 className="text-2xl font-extrabold tracking-tight text-white">You were removed from this meeting</h1>
+            <p className="text-slate-450 text-sm">
+              The host removed you from the room.
+            </p>
+          </div>
+
+          <div className="pt-4 border-t border-slate-800">
             <button
               onClick={() => router.push(`/`)}
               className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded-xl transition-all text-sm shadow-md uppercase tracking-wider"
