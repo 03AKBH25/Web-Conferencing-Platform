@@ -10,7 +10,11 @@ class IsMeetingHost(permissions.BasePermission):
     """
     def has_permission(self, request, view):
         if not request.user or not request.user.is_authenticated:
-            return False
+            raise CustomAPIException(
+                message="You do not have permission to perform this action.",
+                code="PERMISSION_DENIED",
+                status_code=status.HTTP_403_FORBIDDEN
+            )
 
         meeting_id = view.kwargs.get('meeting_id')
         if not meeting_id:
