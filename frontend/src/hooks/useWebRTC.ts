@@ -60,10 +60,11 @@ export function useWebRTC(
   const [meetingDetails, setMeetingDetails] = useState<Meeting | null>(null);
   const [meetingEnded, setMeetingEnded] = useState(false);
   const [removedFromMeeting, setRemovedFromMeeting] = useState(false);
-  
+
   const peerConnections = useRef<Map<string, RTCPeerConnection>>(new Map());
   const iceQueueMap = useRef<Map<string, RTCIceCandidateInit[]>>(new Map());
   const localStreamRef = useRef<MediaStream | null>(null);
+  const remoteStreams = useRef<Map<string, MediaStream>>(new Map());
 
   // Local media hook
   const {
@@ -101,7 +102,39 @@ export function useWebRTC(
       peerConnections.current.delete(remoteSessionId);
     }
     iceQueueMap.current.delete(remoteSessionId);
+    remoteStreams.current.delete(remoteSessionId);
     setRemoteParticipants((prev) => prev.filter(p => p.session_id !== remoteSessionId));
+  }, []);
+
+  const attachLocalTracks = useCallback(async (pc: RTCPeerConnection) => {
+    const stream = localStreamRef.current;
+    if (!stream) return;
+
+    const replacements: Promise<void>[] = [];
+
+    stream.getTracks().forEach((track) => {
+      const existingSender = pc.getSenders().find((sender) => sender.track === track);
+      if (existingSender) return;
+
+      const matchingTransceiver = pc.getTransceivers().find((transceiver) =>
+        transceiver.receiver.track.kind === track.kind &&
+        (!transceiver.sender.track || transceiver.sender.track.readyState === 'ended')
+      );
+
+      if (matchingTransceiver) {
+        matchingTransceiver.direction = 'sendrecv';
+        replacements.push(matchingTransceiver.sender.replaceTrack(track));
+        return;
+      }
+
+      pc.addTrack(track, stream);
+    });
+
+    try {
+      await Promise.all(replacements);
+    } catch (err) {
+      console.error('Failed to attach local media tracks:', err);
+    }
   }, []);
 
   // Peer connection instantiator helper
@@ -113,15 +146,19 @@ export function useWebRTC(
     createOffer = true
   ) => {
     console.log(`Initiating Peer Connection for session: ${remoteSessionId}, createOffer=${createOffer}`);
-    
+
     const pc = new RTCPeerConnection(ICE_SERVERS_CONFIG);
     peerConnections.current.set(remoteSessionId, pc);
 
-    // Add local tracks to peer connection
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((track) => {
-        pc.addTrack(track, localStreamRef.current!);
-      });
+    // Add local tracks to peer connection ONLY when creating an offer (initiator).
+    if (createOffer) {
+      await attachLocalTracks(pc);
+      // Always ensure a video transceiver exists even if we have no video track
+      // (e.g. camera was denied). This allows replaceTrack later without renegotiation.
+      const hasVideoSender = pc.getSenders().some(s => s.track?.kind === 'video');
+      if (!hasVideoSender) {
+        pc.addTransceiver('video', { direction: 'sendrecv' });
+      }
     }
 
     // Capture ICE candidates
@@ -137,8 +174,12 @@ export function useWebRTC(
     // Attach incoming remote tracks
     pc.ontrack = (event) => {
       console.log(`Received remote track from ${remoteSessionId}:`, event.track.kind);
-      const remoteStream = event.streams[0] || new MediaStream([event.track]);
-      
+      const remoteStream = remoteStreams.current.get(remoteSessionId) || new MediaStream();
+      if (!remoteStream.getTracks().some((track) => track.id === event.track.id)) {
+        remoteStream.addTrack(event.track);
+      }
+      remoteStreams.current.set(remoteSessionId, remoteStream);
+
       setRemoteParticipants((prev) =>
         prev.map((p) =>
           p.session_id === remoteSessionId ? { ...p, stream: remoteStream } : p
@@ -167,10 +208,10 @@ export function useWebRTC(
     }
 
     return pc;
-  }, [closePeerConnection]);
+  }, [attachLocalTracks, closePeerConnection]);
 
   // Main callback to route incoming WebSocket events
-  const handleWebSocketMessage = useCallback(async (socketInst: MeetingSocket) => {
+  const handleWebSocketMessage = useCallback((socketInst: MeetingSocket) => {
     // 1. Initial state synchronization
     const unsubscribeState = socketInst.subscribe<MeetingStatePayload>('meeting_state', (payload) => {
       console.log('Received meeting_state:', payload);
@@ -197,7 +238,7 @@ export function useWebRTC(
     const unsubscribeJoined = socketInst.subscribe<ParticipantJoinedPayload>('participant_joined', (payload) => {
       const newPeer = payload.participant;
       console.log('Participant joined:', newPeer);
-      
+
       setRemoteParticipants((prev) => {
         if (prev.some(p => p.session_id === newPeer.session_id)) return prev;
         return [...prev, newPeer];
@@ -215,7 +256,7 @@ export function useWebRTC(
     const unsubscribeOffer = socketInst.subscribe<WebRTCOfferPayload>('webrtc_offer', async (payload) => {
       const fromSessionId = payload.from;
       console.log('Received WebRTC offer from:', fromSessionId);
-      
+
       let pc = peerConnections.current.get(fromSessionId);
       if (!pc) {
         pc = await initiatePeerConnection(fromSessionId, 'Guest', false, socketInst, false);
@@ -223,9 +264,23 @@ export function useWebRTC(
 
       try {
         await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
+
+        // Add local tracks AFTER setting remote description (answerer side).
+        // This lets the browser match our local tracks to the remote offer's
+        // transceivers by media kind, preventing cross-browser mismatches.
+        await attachLocalTracks(pc);
+
+        // Ensure video transceivers are sendrecv so we can start sending
+        // video later if camera becomes available (without renegotiation)
+        pc.getTransceivers().forEach(t => {
+          if (t.receiver.track.kind === 'video' && t.direction === 'recvonly') {
+            t.direction = 'sendrecv';
+          }
+        });
+
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
-        
+
         socketInst.send('webrtc_answer', {
           target: fromSessionId,
           sdp: answer
@@ -248,12 +303,12 @@ export function useWebRTC(
     const unsubscribeAnswer = socketInst.subscribe<WebRTCAnswerPayload>('webrtc_answer', async (payload) => {
       const fromSessionId = payload.from;
       console.log('Received WebRTC answer from:', fromSessionId);
-      
+
       const pc = peerConnections.current.get(fromSessionId);
       if (pc) {
         try {
           await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp));
-          
+
           // Apply any queued ICE candidates
           const queue = iceQueueMap.current.get(fromSessionId);
           if (queue) {
@@ -272,7 +327,7 @@ export function useWebRTC(
     const unsubscribeIce = socketInst.subscribe<WebRTCICECandidatePayload>('webrtc_ice_candidate', async (payload) => {
       const fromSessionId = payload.from;
       const candidate = payload.candidate;
-      
+
       const pc = peerConnections.current.get(fromSessionId);
       if (pc) {
         try {
@@ -352,6 +407,10 @@ export function useWebRTC(
       console.log('Meeting has been ended by the host.');
       setMeetingEnded(true);
       cleanupMedia();
+      peerConnections.current.forEach((pc) => pc.close());
+      peerConnections.current.clear();
+      iceQueueMap.current.clear();
+      remoteStreams.current.clear();
     });
 
     return () => {
@@ -370,28 +429,28 @@ export function useWebRTC(
       unsubscribeParticipantRemoved();
       unsubscribeMeetingEnded();
     };
-  }, [initiatePeerConnection, closePeerConnection, setMicrophoneEnabledState, cleanupMedia, sessionId]);
+  }, [initiatePeerConnection, closePeerConnection, attachLocalTracks, setMicrophoneEnabledState, cleanupMedia, sessionId]);
 
   // Handle socket subscription registration
   useEffect(() => {
-    let cleanupWS: () => void = () => {};
-    
+    let cleanupWS: (() => void) | undefined;
+
     if (socket && connectionState === 'connected') {
-      handleWebSocketMessage(socket).then((clean) => {
-        if (clean) cleanupWS = clean;
-      });
+      cleanupWS = handleWebSocketMessage(socket);
     }
 
     return () => {
-      cleanupWS();
+      if (cleanupWS) {
+        cleanupWS();
+      }
     };
   }, [socket, connectionState, handleWebSocketMessage]);
 
   // Replace video track helper (for screen sharing toggle)
   const replaceVideoTrack = useCallback((newTrack: MediaStreamTrack) => {
     peerConnections.current.forEach((pc) => {
-      const senders = pc.getSenders();
-      const videoSender = senders.find(sender => sender.track && sender.track.kind === 'video');
+      const videoSender = pc.getSenders().find(sender => sender.track?.kind === 'video')
+        || pc.getTransceivers().find(t => t.receiver.track.kind === 'video')?.sender;
       if (videoSender) {
         videoSender.replaceTrack(newTrack).catch(err => console.error('Failed to replace track:', err));
       }
@@ -403,16 +462,39 @@ export function useWebRTC(
   const toggleMicrophone = useCallback(() => {
     toggleLocalMic();
     if (socket) {
-      socket.send('audio_state_changed', { enabled: !microphoneEnabled });
+      const nextState = localStreamRef.current?.getAudioTracks()[0]
+        ? localStreamRef.current.getAudioTracks()[0].enabled
+        : !microphoneEnabled;
+      socket.send('audio_state_changed', { enabled: nextState });
     }
   }, [socket, toggleLocalMic, microphoneEnabled]);
 
-  const toggleCamera = useCallback(() => {
-    toggleLocalCam();
+  const toggleCamera = useCallback(async () => {
+    const newTrack = await toggleLocalCam();
     if (socket) {
-      socket.send('video_state_changed', { enabled: !cameraEnabled });
+      if (newTrack) {
+        // Camera was just acquired — replace the null track in each PC's video sender
+        peerConnections.current.forEach((pc) => {
+          const videoTransceiver = pc.getTransceivers().find(
+            t => t.receiver.track.kind === 'video'
+          );
+          if (videoTransceiver) {
+            videoTransceiver.sender.replaceTrack(newTrack).catch(err =>
+              console.error('Failed to replace video track:', err)
+            );
+          }
+        });
+        socket.send('video_state_changed', { enabled: true });
+      } else {
+        // Normal toggle — read the track's current enabled state
+        const videoTrack = localStreamRef.current?.getVideoTracks()[0];
+        if (videoTrack) {
+          socket.send('video_state_changed', { enabled: videoTrack.enabled });
+        }
+        // If no video track and acquisition failed, don't send stale state
+      }
     }
-  }, [socket, toggleLocalCam, cameraEnabled]);
+  }, [socket, toggleLocalCam]);
 
   const startScreenShare = useCallback(async () => {
     const stream = await startLocalScreen(replaceVideoTrack);
@@ -462,7 +544,8 @@ export function useWebRTC(
     peerConnections.current.forEach((pc) => pc.close());
     peerConnections.current.clear();
     iceQueueMap.current.clear();
-    
+    remoteStreams.current.clear();
+
     if (meetingId && participantId) {
       api.leaveMeeting(meetingId, participantId).catch((err) => {
         console.error('Failed to leave meeting via API:', err);

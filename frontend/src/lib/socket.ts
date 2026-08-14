@@ -4,6 +4,7 @@ export class MeetingSocket {
   private ws: WebSocket | null = null;
   private url: string;
   private onMessageCallbacks: Map<string, Set<(payload: unknown) => void>> = new Map();
+  private pendingMessages: Map<string, unknown[]> = new Map();
   private onStateChange: (state: ConnectionState) => void;
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
@@ -102,6 +103,13 @@ export class MeetingSocket {
       this.onMessageCallbacks.set(type, new Set());
     }
     this.onMessageCallbacks.get(type)!.add(callback as (payload: unknown) => void);
+
+    const pending = this.pendingMessages.get(type);
+    if (pending) {
+      pending.forEach((payload) => callback(payload as T));
+      this.pendingMessages.delete(type);
+    }
+
     return () => this.unsubscribe(type, callback);
   }
 
@@ -117,8 +125,12 @@ export class MeetingSocket {
 
   private trigger(type: string, payload: unknown): void {
     const callbacks = this.onMessageCallbacks.get(type);
-    if (callbacks) {
+    if (callbacks && callbacks.size > 0) {
       callbacks.forEach((callback) => callback(payload));
+    } else {
+      const pending = this.pendingMessages.get(type) || [];
+      pending.push(payload);
+      this.pendingMessages.set(type, pending);
     }
   }
 }
